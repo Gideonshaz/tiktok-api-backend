@@ -2,7 +2,7 @@ import json
 import os
 import urllib.parse
 import urllib.request
-from flask import Flask, request
+from flask import Flask, request, render_template
 
 app = Flask(__name__)
 
@@ -11,7 +11,7 @@ TOKEN_URL = "https://auth.tiktok-shops.com/api/v2/token/get"
 
 @app.route("/")
 def home():
-    return "TikTok API Backend is running"
+    return render_template("index.html")
 
 
 @app.route("/auth/callback")
