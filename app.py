@@ -59,13 +59,9 @@ def callback():
 
     # Never print tokens to the browser or logs. Persistent token storage will
     # be added separately; this callback verifies and completes the exchange.
-    granted_scopes = data.get("granted_scopes") or []
-    scope_text = ", ".join(granted_scopes) if isinstance(granted_scopes, list) else str(granted_scopes)
-
     return (
-        "<h2>TikTok Shop authorized successfully</h2>"
-        "<p>The authorization code was exchanged for seller tokens successfully.</p>"
-        f"<p>Granted scopes: {scope_text}</p>"
+        "<h2>Authorization successful</h2>"
+        "<p>The account has been connected successfully.</p>"
         "<p>You can close this page.</p>"
     )
 
