@@ -267,7 +267,7 @@ def tiktok_proxy():
             token, _ = active_token("seller.promotion.info")
             query = {"page_size": min(int(d.get("page_size") or 20), 100)}
             if d.get("page_token"): query["page_token"] = d["page_token"]
-            payload, status = tiktok_request("GET", "/promotion/202309/activities", token, shop_cipher, query=query)
+            payload, status = tiktok_request("POST", "/promotion/202309/activities/search", token, shop_cipher, query=query, body={})
         elif action == "create_promotion":
             token, _ = active_token("seller.promotion.write")
             body = d.get("body")
