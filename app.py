@@ -14,8 +14,14 @@ def home():
     return render_template("index.html")
 
 
-@app.route("/auth/callback")
+@app.route("/auth/callback", methods=["GET", "HEAD"])
 def callback():
+    # Some browsers/proxies may probe the callback URL with HEAD before the
+    # real navigation. TikTok auth codes are one-time, so HEAD must NEVER
+    # exchange/consume the code.
+    if request.method == "HEAD":
+        return "", 200
+
     auth_code = request.args.get("code")
     if not auth_code:
         return "Authorization failed: callback did not contain a code.", 400
