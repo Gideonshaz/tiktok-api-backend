@@ -2,12 +2,42 @@ import json
 import os
 import urllib.parse
 import urllib.request
+import time
+import hmac
+import hashlib
 import psycopg
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, jsonify
 
 app = Flask(__name__)
 
 TOKEN_URL = "https://auth.tiktok-shops.com/api/v2/token/get"
+OPEN_API = "https://open-api.tiktokglobalshop.com"
+
+
+def sign_request(path, params, body=b""):
+    secret = os.environ["TIKTOK_APP_SECRET"]
+    clean = {k: str(v) for k, v in params.items() if k not in ("sign", "access_token")}
+    base = path + "".join(k + clean[k] for k in sorted(clean)) + body.decode("utf-8")
+    wrapped = secret + base + secret
+    return hmac.new(secret.encode(), wrapped.encode(), hashlib.sha256).hexdigest()
+
+
+def latest_authorization():
+    database_url = ensure_token_store()
+    with psycopg.connect(database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, access_token, granted_scopes, created_at FROM tiktok_authorizations ORDER BY id DESC LIMIT 1")
+            return cur.fetchone()
+
+
+def get_authorized_shops(access_token):
+    path = "/authorization/202309/shops"
+    params = {"app_key": os.environ["TIKTOK_APP_KEY"], "timestamp": int(time.time())}
+    params["sign"] = sign_request(path, params)
+    url = OPEN_API + path + "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"x-tts-access-token": access_token, "content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def ensure_token_store():
@@ -132,6 +162,25 @@ def callback():
         "<p>The account has been connected successfully.</p>"
         "<p>You can close this page.</p>"
     )
+
+
+@app.get("/api/connection")
+def connection_status():
+    try:
+        row = latest_authorization()
+        if not row:
+            return jsonify(connected=False, message="No TikTok Shop authorization saved yet.")
+        payload = get_authorized_shops(row[1])
+        if payload.get("code") != 0:
+            return jsonify(connected=False, saved=True, message=payload.get("message", "TikTok rejected the saved authorization.")), 502
+        shops = (payload.get("data") or {}).get("shops") or []
+        safe_shops = []
+        for shop in shops:
+            safe_shops.append({"name": shop.get("shop_name") or shop.get("name") or "TikTok Shop", "region": shop.get("region"), "cipher": shop.get("cipher") or shop.get("shop_cipher"), "id": shop.get("id") or shop.get("shop_id")})
+        return jsonify(connected=True, saved=True, shops=safe_shops, authorization_id=row[0])
+    except Exception:
+        app.logger.exception("Connection verification failed")
+        return jsonify(connected=False, message="Connection verification failed. Check backend logs."), 500
 
 
 if __name__ == "__main__":
