@@ -23,15 +23,23 @@ def sign_request(path, params, body=b""):
     return hmac.new(secret.encode(), wrapped.encode(), hashlib.sha256).hexdigest()
 
 
+def fingerprint(value):
+    if not value:
+        return None
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:10]
+
+
 def latest_authorization():
     database_url = ensure_token_store()
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, access_token, granted_scopes, metadata, created_at FROM tiktok_authorizations ORDER BY id DESC LIMIT 1")
+            cur.execute("SELECT id, access_token, granted_scopes, metadata, created_at, app_key FROM tiktok_authorizations ORDER BY id DESC LIMIT 1")
             return cur.fetchone()
 
 
 def get_authorized_shops(access_token):
+    # Returns both TikTok JSON and safe HTTP diagnostics. Never returns/logs tokens.
+
     path = "/authorization/202309/shops"
     params = {"app_key": os.environ["TIKTOK_APP_KEY"], "timestamp": int(time.time())}
     params["sign"] = sign_request(path, params)
@@ -39,14 +47,16 @@ def get_authorized_shops(access_token):
     req = urllib.request.Request(url, headers={"x-tts-access-token": access_token, "content-type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
+            parsed = json.loads(response.read().decode("utf-8"))
+            return parsed, {"http_status": response.status, "request_id": response.headers.get("x-tts-logid") or response.headers.get("request-id")}
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         app.logger.error("TikTok shops API HTTP %s: %s", e.code, body)
         try:
-            return json.loads(body)
+            parsed = json.loads(body)
         except Exception:
-            return {"code": e.code, "message": body or str(e)}
+            parsed = {"code": e.code, "message": body or str(e)}
+        return parsed, {"http_status": e.code, "request_id": e.headers.get("x-tts-logid") or e.headers.get("request-id")}
 
 
 def ensure_token_store():
@@ -160,6 +170,7 @@ def callback():
         return "TikTok responded successfully but no usable tokens were returned.", 502
 
     try:
+        app.logger.info("OAuth token received app_fp=%s access_fp=%s scopes=%s user_type=%s", fingerprint(app_key), fingerprint(access_token), data.get("granted_scopes") or [], data.get("user_type"))
         save_authorization(database_url, app_key, data)
     except Exception:
         app.logger.exception("TikTok authorization succeeded but durable token save failed")
@@ -184,14 +195,27 @@ def connection_status():
         app.logger.info("Latest authorization id=%s user_type=%s granted_scopes=%s", row[0], meta.get("user_type"), granted)
         if "seller.authorization.info" not in granted:
             return jsonify(connected=False, saved=True, authorization_id=row[0], user_type=meta.get("user_type"), granted_scopes=granted, message="Latest token does not contain seller.authorization.info."), 409
-        payload = get_authorized_shops(row[1])
+        diagnostics = {
+            "authorization_id": row[0],
+            "created_at": row[4].isoformat() if row[4] else None,
+            "granted_scopes": granted,
+            "has_authorization_info": "seller.authorization.info" in granted,
+            "user_type": meta.get("user_type"),
+            "access_fp": fingerprint(row[1]),
+            "stored_app_fp": fingerprint(row[5]),
+            "runtime_app_fp": fingerprint(os.environ.get("TIKTOK_APP_KEY")),
+            "same_app": row[5] == os.environ.get("TIKTOK_APP_KEY"),
+        }
+        app.logger.info("Connection diagnostic %s", diagnostics)
+        payload, http_diag = get_authorized_shops(row[1])
+        diagnostics.update(http_diag)
         if payload.get("code") != 0:
-            return jsonify(connected=False, saved=True, message=payload.get("message", "TikTok rejected the saved authorization.")), 502
+            return jsonify(connected=False, saved=True, diagnostic=diagnostics, tiktok={"code": payload.get("code"), "message": payload.get("message"), "request_id": payload.get("request_id") or diagnostics.get("request_id")}), 502
         shops = (payload.get("data") or {}).get("shops") or []
         safe_shops = []
         for shop in shops:
             safe_shops.append({"name": shop.get("shop_name") or shop.get("name") or "TikTok Shop", "region": shop.get("region"), "cipher": shop.get("cipher") or shop.get("shop_cipher"), "id": shop.get("id") or shop.get("shop_id")})
-        return jsonify(connected=True, saved=True, shops=safe_shops, authorization_id=row[0])
+        return jsonify(connected=True, saved=True, shops=safe_shops, authorization_id=row[0], diagnostic=diagnostics)
     except Exception:
         app.logger.exception("Connection verification failed")
         return jsonify(connected=False, message="Connection verification failed. Check backend logs."), 500
