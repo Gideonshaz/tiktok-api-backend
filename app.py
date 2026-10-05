@@ -2,11 +2,61 @@ import json
 import os
 import urllib.parse
 import urllib.request
+import psycopg
 from flask import Flask, request, render_template
 
 app = Flask(__name__)
 
 TOKEN_URL = "https://auth.tiktok-shops.com/api/v2/token/get"
+
+
+def ensure_token_store():
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+    with psycopg.connect(database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS tiktok_authorizations (
+                    id BIGSERIAL PRIMARY KEY,
+                    app_key TEXT NOT NULL,
+                    access_token TEXT NOT NULL,
+                    refresh_token TEXT NOT NULL,
+                    access_token_expire_in BIGINT,
+                    refresh_token_expire_in BIGINT,
+                    granted_scopes JSONB,
+                    metadata JSONB,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+        conn.commit()
+    return database_url
+
+
+def save_authorization(database_url, app_key, data):
+    safe_metadata = {k: v for k, v in data.items() if k not in ("access_token", "refresh_token")}
+    scopes = data.get("granted_scopes") or []
+    with psycopg.connect(database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO tiktok_authorizations
+                    (app_key, access_token, refresh_token, access_token_expire_in,
+                     refresh_token_expire_in, granted_scopes, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+                """,
+                (
+                    app_key,
+                    data["access_token"],
+                    data["refresh_token"],
+                    data.get("access_token_expire_in"),
+                    data.get("refresh_token_expire_in"),
+                    json.dumps(scopes),
+                    json.dumps(safe_metadata),
+                ),
+            )
+        conn.commit()
 
 
 @app.route("/")
@@ -34,6 +84,13 @@ def callback():
             "TIKTOK_APP_KEY or TIKTOK_APP_SECRET in Render Environment Variables.",
             500,
         )
+
+    # Verify durable storage BEFORE consuming TikTok's one-time auth code.
+    try:
+        database_url = ensure_token_store()
+    except Exception:
+        app.logger.exception("TikTok token store is unavailable")
+        return "Authorization backend storage is not ready. The TikTok auth code was NOT consumed. Please try again after storage is configured.", 503
 
     params = urllib.parse.urlencode(
         {
@@ -63,8 +120,13 @@ def callback():
     if not access_token or not refresh_token:
         return "TikTok responded successfully but no usable tokens were returned.", 502
 
-    # Never print tokens to the browser or logs. Persistent token storage will
-    # be added separately; this callback verifies and completes the exchange.
+    try:
+        save_authorization(database_url, app_key, data)
+    except Exception:
+        app.logger.exception("TikTok authorization succeeded but durable token save failed")
+        return "TikTok authorization succeeded, but saving the connection failed. Check Render logs.", 500
+
+    # Never print tokens to the browser or logs.
     return (
         "<h2>Authorization successful</h2>"
         "<p>The account has been connected successfully.</p>"
