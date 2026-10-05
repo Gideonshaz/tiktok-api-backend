@@ -2,6 +2,7 @@ import json
 import os
 import urllib.parse
 import urllib.request
+import urllib.error
 import time
 import hmac
 import hashlib
@@ -36,8 +37,16 @@ def get_authorized_shops(access_token):
     params["sign"] = sign_request(path, params)
     url = OPEN_API + path + "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"x-tts-access-token": access_token, "content-type": "application/json"})
-    with urllib.request.urlopen(req, timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        app.logger.error("TikTok shops API HTTP %s: %s", e.code, body)
+        try:
+            return json.loads(body)
+        except Exception:
+            return {"code": e.code, "message": body or str(e)}
 
 
 def ensure_token_store():
