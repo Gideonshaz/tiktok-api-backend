@@ -256,6 +256,37 @@ def connection_status():
 
 
 
+@app.get("/api/credentials")
+def credential_view():
+    """Return the latest saved TikTok access token and authorized shops to the owner.
+    Protected by a separate server-side view key. The view key is never stored in GitHub.
+    """
+    expected = os.environ.get("CREDENTIAL_VIEW_KEY")
+    supplied = request.headers.get("X-Credential-View-Key")
+    if not expected or not supplied or not hmac.compare_digest(supplied, expected):
+        return jsonify(error="Unauthorized"), 401
+    try:
+        row = latest_authorization()
+        if not row:
+            return jsonify(error="No TikTok authorization saved"), 404
+        payload, _ = get_authorized_shops(row[1])
+        shops = (payload.get("data") or {}).get("shops") or [] if payload.get("code") == 0 else []
+        return jsonify(
+            authorization_id=row[0],
+            access_token=row[1],
+            created_at=row[4].isoformat() if row[4] else None,
+            shops=[{
+                "name": s.get("shop_name") or s.get("name") or "TikTok Shop",
+                "region": s.get("region"),
+                "shop_cipher": s.get("cipher") or s.get("shop_cipher"),
+                "shop_id": s.get("id") or s.get("shop_id"),
+            } for s in shops],
+        )
+    except Exception:
+        app.logger.exception("Credential view failed")
+        return jsonify(error="Credential view failed"), 500
+
+
 @app.route("/api/tiktok", methods=["POST"])
 def tiktok_proxy():
     """Restricted server-side adapter. Secrets/tokens never leave this backend."""
