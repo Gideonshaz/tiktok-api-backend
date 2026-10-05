@@ -27,7 +27,7 @@ def latest_authorization():
     database_url = ensure_token_store()
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, access_token, granted_scopes, created_at FROM tiktok_authorizations ORDER BY id DESC LIMIT 1")
+            cur.execute("SELECT id, access_token, granted_scopes, metadata, created_at FROM tiktok_authorizations ORDER BY id DESC LIMIT 1")
             return cur.fetchone()
 
 
@@ -179,7 +179,7 @@ def connection_status():
         row = latest_authorization()
         if not row:
             return jsonify(connected=False, message="No TikTok Shop authorization saved yet.")
-        payload = get_authorized_shops(row[1])
+        granted = row[2] or []\n        meta = row[3] or {}\n        app.logger.info("Latest authorization id=%s user_type=%s granted_scopes=%s", row[0], meta.get("user_type"), granted)\n        if "seller.shop.info" not in granted:\n            return jsonify(connected=False, saved=True, authorization_id=row[0], user_type=meta.get("user_type"), granted_scopes=granted, message="Latest token does not contain seller.shop.info."), 409\n        payload = get_authorized_shops(row[1])
         if payload.get("code") != 0:
             return jsonify(connected=False, saved=True, message=payload.get("message", "TikTok rejected the saved authorization.")), 502
         shops = (payload.get("data") or {}).get("shops") or []
