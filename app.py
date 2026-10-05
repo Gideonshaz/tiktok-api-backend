@@ -59,6 +59,40 @@ def get_authorized_shops(access_token):
         return parsed, {"http_status": e.code, "request_id": e.headers.get("x-tts-logid") or e.headers.get("request-id")}
 
 
+
+def tiktok_request(method, path, access_token, shop_cipher=None, query=None, body=None):
+    params = {"app_key": os.environ["TIKTOK_APP_KEY"], "timestamp": int(time.time())}
+    if shop_cipher:
+        params["shop_cipher"] = shop_cipher
+    if query:
+        params.update({k: v for k, v in query.items() if v is not None})
+    body_bytes = b""
+    if body is not None:
+        body_bytes = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    params["sign"] = sign_request(path, params, body_bytes)
+    url = OPEN_API + path + "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, data=body_bytes if method != "GET" else None, method=method,
+        headers={"x-tts-access-token": access_token, "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as response:
+            return json.loads(response.read().decode("utf-8")), response.status
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try: payload = json.loads(raw)
+        except Exception: payload = {"code": e.code, "message": raw or str(e)}
+        app.logger.error("TikTok API %s %s HTTP %s code=%s message=%s", method, path, e.code, payload.get("code"), payload.get("message"))
+        return payload, e.code
+
+
+def active_token(required_scope=None):
+    row = latest_authorization()
+    if not row:
+        raise RuntimeError("No TikTok authorization saved")
+    scopes = row[2] or []
+    if required_scope and required_scope not in scopes:
+        raise PermissionError("Saved TikTok authorization is missing " + required_scope)
+    return row[1], scopes
+
 def ensure_token_store():
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
@@ -219,6 +253,35 @@ def connection_status():
     except Exception:
         app.logger.exception("Connection verification failed")
         return jsonify(connected=False, message="Connection verification failed. Check backend logs."), 500
+
+
+
+@app.route("/api/tiktok", methods=["POST"])
+def tiktok_proxy():
+    """Restricted server-side adapter. Secrets/tokens never leave this backend."""
+    d = request.get_json(silent=True) or {}
+    action = d.get("action")
+    shop_cipher = d.get("shop_cipher")
+    try:
+        if action == "list_promotions":
+            token, _ = active_token("seller.promotion.info")
+            query = {"page_size": min(int(d.get("page_size") or 20), 100)}
+            if d.get("page_token"): query["page_token"] = d["page_token"]
+            payload, status = tiktok_request("GET", "/promotion/202309/activities", token, shop_cipher, query=query)
+        elif action == "create_promotion":
+            token, _ = active_token("seller.promotion.write")
+            body = d.get("body")
+            if not isinstance(body, dict):
+                return jsonify(error="body is required"), 400
+            payload, status = tiktok_request("POST", "/promotion/202309/activities", token, shop_cipher, body=body)
+        else:
+            return jsonify(error="Unsupported TikTok action"), 400
+        return jsonify(payload), status if status >= 400 else 200
+    except PermissionError as e:
+        return jsonify(error=str(e)), 403
+    except Exception:
+        app.logger.exception("TikTok adapter failed")
+        return jsonify(error="TikTok adapter failed"), 500
 
 
 if __name__ == "__main__":
