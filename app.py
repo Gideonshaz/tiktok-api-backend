@@ -182,8 +182,8 @@ def connection_status():
         granted = row[2] or []
         meta = row[3] or {}
         app.logger.info("Latest authorization id=%s user_type=%s granted_scopes=%s", row[0], meta.get("user_type"), granted)
-        if "seller.shop.info" not in granted:
-            return jsonify(connected=False, saved=True, authorization_id=row[0], user_type=meta.get("user_type"), granted_scopes=granted, message="Latest token does not contain seller.shop.info."), 409
+        if "seller.authorization.info" not in granted:
+            return jsonify(connected=False, saved=True, authorization_id=row[0], user_type=meta.get("user_type"), granted_scopes=granted, message="Latest token does not contain seller.authorization.info."), 409
         payload = get_authorized_shops(row[1])
         if payload.get("code") != 0:
             return jsonify(connected=False, saved=True, message=payload.get("message", "TikTok rejected the saved authorization.")), 502
